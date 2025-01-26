@@ -1,0 +1,32 @@
+services:
+  - name: backend
+    type: web
+    runtime: docker
+    dockerfile: ./Dockerfile
+    envVars:
+      - key: MONGO_URI
+        value: mongodb://mongodb:27017/mydb
+      - key: REDIS_URI
+        value: redis:6379
+      - key: PORT
+        value: 8000
+      - key: MONGO_DB_NAME
+        value: event-trigger
+    env: docker
+    plan: free
+    autoDeploy: false
+
+  - name: mongodb
+    type: database
+    runtime: docker
+    image: mongo:latest
+    plan: free
+    autoDeploy: false
+    containerCommand: "mongod --bind_ip_all"
+
+  - name: redis
+    type: database
+    runtime: docker
+    image: redis:latest
+    plan: free
+    autoDeploy: false
