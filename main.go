@@ -4,6 +4,7 @@ import (
 	"context"
 	httpServer "eventtrigger-backend/pkg/http"
 	"eventtrigger-backend/pkg/models"
+	"eventtrigger-backend/pkg/services/cronjobs"
 	"flag"
 	"log"
 	"net"
@@ -15,10 +16,12 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/mgo.v2/bson"
 )
 
 const defaultPort = "8081"
@@ -103,6 +106,8 @@ func main() {
 
 	dbName := os.Getenv("MONGO_DB_NAME")
 
+	logger.Info("Database Name", zap.String("name", dbName))
+
 	if dbName != "" {
 		dbName = "event-trigger"
 	}
@@ -110,13 +115,56 @@ func main() {
 	mongoDb := client.Database(dbName)
 
 	// Create Collections
+	triggersCollection := mongoDb.Collection("triggers")
 	eventsCollection := mongoDb.Collection("events")
+
+	indexModel := mongo.IndexModel{
+		Keys:    bson.M{"name": 1},
+		Options: options.Index().SetUnique(true),
+	}
+
+	_, err = triggersCollection.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		logger.Error("Error creating index for triggers collection", zap.Error(err))
+		return
+	}
+
+	redisAddr := os.Getenv("REDIS_URI")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: redisPassword,
+		DB:       0,
+	})
+
+	// Check connection
+	_, err = redisClient.Ping(ctx).Result()
+	if err != nil {
+		logger.Error("Could not connect to Redis: %v", zap.Error(err))
+		return
+	}
+
+	logger.Info("Connected to Redis")
 
 	serverCtx := context.Background()
 
 	r := chi.NewRouter()
 
-	httpServer.New(r, eventsCollection, logger)
+	// Start the cron scheduler
+	cronSchedulerSvc := cronjobs.NewCronScheduler(logger)
+
+	go func() {
+		logger.Debug("Cron Scheduler started")
+
+		cronSchedulerSvc.Start()
+	}()
+
+	httpServer.New(r, triggersCollection, eventsCollection, redisClient, cronSchedulerSvc, logger)
 
 	server := &http.Server{
 		Addr:    ":" + port,

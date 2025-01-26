@@ -1,54 +1,51 @@
 package http
 
 import (
-	"encoding/json"
-	models "eventtrigger-backend/pkg/models"
-	"io"
-	"net/http"
+	"context"
+	"crypto/rand"
+	"eventtrigger-backend/pkg/models"
+	"fmt"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 )
 
-type EventService struct {
+type EventsService struct {
 	logger           *zap.Logger
 	eventsCollection *mongo.Collection
+	redisClient      *redis.Client
 }
 
-func NewEventService(logger *zap.Logger, eventsCollection *mongo.Collection) *EventService {
-	return &EventService{
+func NewEventsService(logger *zap.Logger, eventsCollection *mongo.Collection, redisClient *redis.Client) *EventsService {
+	return &EventsService{
 		logger:           logger,
 		eventsCollection: eventsCollection,
+		redisClient:      redisClient,
 	}
 }
 
-func (es *EventService) CreateEvent(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		es.logger.Error("error reading body", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	defer r.Body.Close()
+func (es *EventsService) StoreEventLogs(ctx context.Context, triggerName string, eventLogs models.Events) error {
+	key := createRandomKey(triggerName)
 
-	var trigger models.Event
-
-	err = json.Unmarshal(body, &trigger)
+	err := es.redisClient.Set(ctx, key, eventLogs, 2*time.Hour).Err()
 	if err != nil {
-		es.logger.Error("error unmarshalling JSON", zap.Error(err))
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		es.logger.Error("error storing event logs", zap.Error(err))
+		return err
 	}
 
-	_, err = es.eventsCollection.InsertOne(r.Context(), trigger)
+	return nil
+}
 
+func createRandomKey(triggerName string) string {
+
+	b := make([]byte, 8)
+
+	_, err := rand.Read(b)
 	if err != nil {
-		es.logger.Error("error creating event", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
-		return
+		return ""
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("event created"))
+	return fmt.Sprintf("%s-%x", triggerName, b)
 }
