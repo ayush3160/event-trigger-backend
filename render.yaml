@@ -1,3 +1,16 @@
+databases:
+  - name: mongodb
+    type: mongodb
+    version: 4.4
+    plan: free
+    runtime: docker
+
+  - name: redis
+    type: redis
+    version: 6
+    plan: free
+    runtime: docker
+
 services:
   - name: backend
     type: web
@@ -13,20 +26,5 @@ services:
       - key: MONGO_DB_NAME
         value: event-trigger
     env: docker
-    plan: free
-    autoDeploy: false
-
-  - name: mongodb
-    type: database
-    runtime: docker
-    image: mongo:latest
-    plan: free
-    autoDeploy: false
-    containerCommand: "mongod --bind_ip_all"
-
-  - name: redis
-    type: database
-    runtime: docker
-    image: redis:latest
     plan: free
     autoDeploy: false
