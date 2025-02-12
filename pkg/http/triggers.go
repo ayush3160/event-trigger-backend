@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	models "eventtrigger-backend/pkg/models"
+	"eventtrigger-backend/pkg/models"
 	"eventtrigger-backend/pkg/services/cronjobs"
 	"fmt"
 	"io"
@@ -33,133 +33,95 @@ func NewTriggerService(logger *zap.Logger, triggersCollection *mongo.Collection,
 	}
 }
 
+func (es *TriggerService) handleError(w http.ResponseWriter, err error, message string, statusCode int) {
+	es.logger.Error(message, zap.Error(err))
+	http.Error(w, err.Error(), statusCode)
+}
+
 func (es *TriggerService) TestTrigger(w http.ResponseWriter, r *http.Request) {
 	var trigger models.Trigger
 	if err := json.NewDecoder(r.Body).Decode(&trigger); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		es.handleError(w, err, "Invalid trigger payload", http.StatusBadRequest)
 		return
 	}
 
 	callBackFunc, err := es.createHttpJob(trigger)
-
 	if err != nil {
-		es.logger.Error("error creating job", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		es.handleError(w, err, "Error creating job", http.StatusInternalServerError)
 		return
 	}
 
-	highOrderFuncToRemoveJobId := func() {
+	es.cronJobSchedulerSvc.AddJob(trigger.Name, trigger.Schedule, func() {
 		callBackFunc()
 		es.cronJobSchedulerSvc.RemoveJob(trigger.Name)
-	}
-
-	es.cronJobSchedulerSvc.AddJob(trigger.Name, trigger.Schedule, highOrderFuncToRemoveJobId)
+	})
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("triggered registered for testing"))
+	w.Write([]byte("Trigger registered for testing"))
 }
 
 func (es *TriggerService) CreateTrigger(w http.ResponseWriter, r *http.Request) {
 	var trigger models.Trigger
 	if err := json.NewDecoder(r.Body).Decode(&trigger); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		es.handleError(w, err, "Invalid trigger payload", http.StatusBadRequest)
 		return
 	}
 
-	_, err := es.triggersCollection.InsertOne(r.Context(), trigger)
-
-	if err != nil {
-		es.logger.Error("error creating event", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+	if _, err := es.triggersCollection.InsertOne(r.Context(), trigger); err != nil {
+		es.handleError(w, err, "Error inserting trigger into database", http.StatusInternalServerError)
 		return
 	}
 
 	callBackFunc, err := es.createHttpJob(trigger)
-
 	if err != nil {
-		es.logger.Error("error creating job", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		es.handleError(w, err, "Error creating job", http.StatusInternalServerError)
 		return
 	}
 
 	es.cronJobSchedulerSvc.AddJob(trigger.Name, trigger.Schedule, callBackFunc)
-
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("trigger created"))
+	w.Write([]byte("Trigger created"))
 }
 
 func (es *TriggerService) DeleteTrigger(w http.ResponseWriter, r *http.Request) {
 	eventName := chi.URLParam(r, "name")
-
-	_, err := es.triggersCollection.DeleteOne(r.Context(), bson.M{"name": eventName})
-
-	if err != nil {
-		es.logger.Error("error deleting event", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+	if _, err := es.triggersCollection.DeleteOne(r.Context(), bson.M{"name": eventName}); err != nil {
+		es.handleError(w, err, "Error deleting trigger", http.StatusInternalServerError)
 		return
 	}
 
 	es.cronJobSchedulerSvc.RemoveJob(eventName)
-
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("event deleted"))
+	w.Write([]byte("Trigger deleted"))
 }
 
 func (es *TriggerService) ListTriggers(w http.ResponseWriter, r *http.Request) {
 	var triggers []models.Trigger
-
 	cursor, err := es.triggersCollection.Find(r.Context(), bson.M{})
 	if err != nil {
-		es.logger.Error("error listing triggers", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		es.handleError(w, err, "Error listing triggers", http.StatusInternalServerError)
 		return
 	}
 
-	if err = cursor.All(r.Context(), &triggers); err != nil {
-		es.logger.Error("error listing triggers", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+defer cursor.Close(r.Context())
+
+	if err := cursor.All(r.Context(), &triggers); err != nil {
+		es.handleError(w, err, "Error parsing triggers", http.StatusInternalServerError)
 		return
 	}
 
-	triggersBytes, err := json.Marshal(triggers)
-	if err != nil {
-		es.logger.Error("error listing triggers", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(triggersBytes)
+	es.writeJSONResponse(w, triggers)
 }
 
 func (es *TriggerService) GetTrigger(w http.ResponseWriter, r *http.Request) {
 	eventName := chi.URLParam(r, "name")
-
 	var trigger models.Trigger
 	if err := es.triggersCollection.FindOne(r.Context(), bson.M{"name": eventName}).Decode(&trigger); err != nil {
-		es.logger.Error("error getting trigger", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		es.handleError(w, err, "Error fetching trigger", http.StatusInternalServerError)
 		return
 	}
 
-	triggerBytes, err := json.Marshal(trigger)
-	if err != nil {
-		es.logger.Error("error getting trigger", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(triggerBytes)
+	es.writeJSONResponse(w, trigger)
 }
 
 func (es *TriggerService) createHttpJob(trigger models.Trigger) (func(), error) {
@@ -172,49 +134,31 @@ func (es *TriggerService) createHttpJob(trigger models.Trigger) (func(), error) 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// var payload interface{}
-		// if err := json.Unmarshal([]byte(trigger.Payload), &payload); err != nil {
-		// 	es.logger.Error("Failed to parse JSON payload",
-		// 		zap.Error(err),
-		// 	)
-		// 	return
-		// }
-
-		// payloadBytes, err := json.Marshal(payload)
-		// if err != nil {
-		// 	es.logger.Error("Failed to marshal payload",
-		// 		zap.Error(err),
-		// 	)
-		// 	return
-		// }
-
 		req, err := http.NewRequestWithContext(ctx, trigger.MethodType, parsedURL.String(), nil)
 		if err != nil {
-			es.logger.Error("Failed to create request",
-				zap.Error(err),
-				zap.String("endpoint", trigger.Endpoint),
-			)
+			es.logger.Error("Failed to create request", zap.Error(err), zap.String("endpoint", trigger.Endpoint))
 			return
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-
 		client := &http.Client{}
 		resp, err := client.Do(req)
 		if err != nil {
-			es.logger.Error("Error executing scheduled request",
-				zap.Error(err),
-				zap.String("endpoint", trigger.Endpoint),
-			)
+			es.logger.Error("Error executing scheduled request", zap.Error(err), zap.String("endpoint", trigger.Endpoint))
 			return
 		}
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
-		es.logger.Debug("Scheduled job response",
-			zap.String("endpoint", trigger.Endpoint),
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("response_body", string(body)),
-		)
+		es.logger.Debug("Scheduled job response", zap.String("endpoint", trigger.Endpoint), zap.Int("status_code", resp.StatusCode), zap.String("response_body", string(body)))
 	}, nil
+}
+
+func (es *TriggerService) writeJSONResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		es.logger.Error("Failed to encode JSON response", zap.Error(err))
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
